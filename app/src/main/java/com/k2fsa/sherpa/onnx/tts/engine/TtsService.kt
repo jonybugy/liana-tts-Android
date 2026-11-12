@@ -58,12 +58,6 @@ class TtsService : TextToSpeechService() {
     override fun onCreate() {
         Log.i(TAG, "onCreate tts service")
         super.onCreate()
-
-        // see https://github.com/Miserlou/Android-SDK-Samples/blob/master/TtsEngine/src/com/example/android/ttsengine/RobotSpeakTtsService.java#L68
-        onLoadLanguage(TtsEngine.lang, "", "")
-        if (TtsEngine.lang2 != null) {
-            onLoadLanguage(TtsEngine.lang2, "", "")
-        }
     }
 
     override fun onDestroy() {
@@ -93,8 +87,13 @@ class TtsService : TextToSpeechService() {
 
         return if (lang == TtsEngine.lang || lang == TtsEngine.lang2) {
             Log.i(TAG, "creating tts, lang :$lang")
-            TtsEngine.createTts(application)
-            TextToSpeech.LANG_AVAILABLE
+            try {
+                TtsEngine.createTts(application)
+                TextToSpeech.LANG_AVAILABLE
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initialize the selected Romanian voice", e)
+                TextToSpeech.LANG_NOT_SUPPORTED
+            }
         } else {
             Log.i(TAG, "lang $lang not supported, tts engine lang: ${TtsEngine.lang}, ${TtsEngine.lang2}")
             TextToSpeech.LANG_NOT_SUPPORTED
@@ -129,7 +128,14 @@ class TtsService : TextToSpeechService() {
             return
         }
         Log.i(TAG, "text: $text, engineSpeed: $engineSpeed")
-        val tts = TtsEngine.tts!!
+        val tts = try {
+            TtsEngine.createTts(application)
+            TtsEngine.tts ?: error("TTS engine initialization returned no synthesizer")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize the TTS synthesizer", e)
+            callback.error()
+            return
+        }
 
         // Note that AudioFormat.ENCODING_PCM_FLOAT requires API level >= 24
         // callback.start(tts.sampleRate(), AudioFormat.ENCODING_PCM_FLOAT, 1)

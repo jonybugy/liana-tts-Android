@@ -2,455 +2,279 @@
 
 package com.k2fsa.sherpa.onnx.tts.engine
 
-import PreferenceHelper
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
-import android.media.MediaPlayer
-import android.net.Uri
 import android.os.Bundle
 import android.util.Log
-import android.widget.Toast
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import com.k2fsa.sherpa.onnx.GenerationConfig
+import com.k2fsa.sherpa.onnx.GeneratedAudio
 import com.k2fsa.sherpa.onnx.tts.engine.ui.theme.SherpaOnnxTtsEngineTheme
-import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import kotlin.time.TimeSource
 
 const val TAG = "sherpa-onnx-tts-engine"
 
 class MainActivity : ComponentActivity() {
-    // TODO(fangjun): Save settings in ttsViewModel
-    private val ttsViewModel: TtsViewModel by viewModels()
-
-    private var mediaPlayer: MediaPlayer? = null
-
-    // see
-    // https://developer.android.com/reference/kotlin/android/media/AudioTrack
-    private lateinit var track: AudioTrack
-
-    private var stopped: Boolean = false
-
-    private var samplesChannel = Channel<FloatArray>(capacity = 128)
-    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        Log.i(TAG, "Start to initialize TTS")
-        TtsEngine.createTts(this)
-        Log.i(TAG, "Finish initializing TTS")
-
-        Log.i(TAG, "Start to initialize AudioTrack")
-        initAudioTrack()
-        Log.i(TAG, "Finish initializing AudioTrack")
-
-        val preferenceHelper = PreferenceHelper(this)
         setContent {
             SherpaOnnxTtsEngineTheme {
-                // A surface container using the 'background' color from the theme
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    Scaffold(topBar = {
-                        TopAppBar(title = { Text("Next-gen Kaldi: TTS Engine") })
-                    }) {
-                        Box(modifier = Modifier.padding(it)) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Column {
-                                    Text("Speed " + String.format("%.1f", TtsEngine.speed))
-                                    Slider(
-                                        value = TtsEngine.speedState.value,
-                                        onValueChange = {
-                                            TtsEngine.speed = it
-                                            preferenceHelper.setSpeed(it)
-                                        },
-                                        valueRange = MIN_TTS_SPEED..MAX_TTS_SPEED,
-                                        modifier = Modifier.fillMaxWidth()
+                val context = LocalContext.current
+                val preferences = remember(context) { PreferenceHelper(context) }
+                val scope = rememberCoroutineScope()
+                var selectedVoiceId by rememberSaveable {
+                    mutableStateOf(RomanianVoice.fromId(preferences.getVoice()).id)
+                }
+                var text by rememberSaveable {
+                    mutableStateOf("Bună ziua! Acesta este un test al vocii românești.")
+                }
+                var isBusy by remember { mutableStateOf(false) }
+                var status by remember { mutableStateOf("Alege o voce și apasă „Testează vocea”.") }
+
+                Scaffold(
+                    topBar = {
+                        TopAppBar(title = { Text("SherpaOnnx TTS Română") })
+                    }
+                ) { contentPadding ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(contentPadding),
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                                .padding(20.dp),
+                            verticalArrangement = Arrangement.spacedBy(16.dp),
+                        ) {
+                            Text(
+                                text = "Motor de sinteză vocală românească",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+
+                            Card(modifier = Modifier.fillMaxWidth()) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text(
+                                        text = "Alege vocea",
+                                        style = MaterialTheme.typography.titleSmall,
                                     )
-                                }
-
-                                val testTextContent = getSampleText(TtsEngine.lang ?: "")
-
-                                var testText by remember { mutableStateOf(testTextContent) }
-                                var startEnabled by remember { mutableStateOf(true) }
-                                var playEnabled by remember { mutableStateOf(false) }
-                                var saveEnabled by remember { mutableStateOf(false) }
-                                var shareEnabled by remember { mutableStateOf(false) }
-                                var rtfText by remember {
-                                    mutableStateOf("")
-                                }
-                                val scrollState = rememberScrollState(0)
-
-                                val context = LocalContext.current
-
-                                val saveLauncher = rememberLauncherForActivityResult(
-                                    contract = ActivityResultContracts.CreateDocument("audio/wav")
-                                ) { uri ->
-                                    if (uri != null) {
-                                        try {
-                                            val srcFile = File(application.filesDir.absolutePath + "/generated.wav")
-                                            contentResolver.openOutputStream(uri)?.use { output ->
-                                                srcFile.inputStream().use { input ->
-                                                    input.copyTo(output)
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    RomanianVoice.values().forEach { voice ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable(enabled = !isBusy) {
+                                                    selectedVoiceId = voice.id
+                                                    preferences.setVoice(voice.id)
+                                                    status = "Voce selectată: ${voice.displayName}"
                                                 }
-                                            }
-                                            Toast.makeText(applicationContext, "Audio saved", Toast.LENGTH_SHORT).show()
-                                        } catch (e: Exception) {
-                                            Log.e(TAG, "Failed to save audio: $e")
-                                            Toast.makeText(applicationContext, "Failed to save audio", Toast.LENGTH_SHORT).show()
+                                                .padding(vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            RadioButton(
+                                                selected = selectedVoiceId == voice.id,
+                                                enabled = !isBusy,
+                                                onClick = {
+                                                    selectedVoiceId = voice.id
+                                                    preferences.setVoice(voice.id)
+                                                    status = "Voce selectată: ${voice.displayName}"
+                                                },
+                                            )
+                                            Text(
+                                                text = voice.displayName,
+                                                modifier = Modifier.padding(start = 8.dp),
+                                            )
                                         }
                                     }
                                 }
-
-                                val numSpeakers = TtsEngine.tts!!.numSpeakers()
-                                if (numSpeakers > 1) {
-                                    OutlinedTextField(
-                                        value = TtsEngine.speakerIdState.value.toString(),
-                                        onValueChange = {
-                                            if (it.isEmpty() || it.isBlank()) {
-                                                TtsEngine.speakerId = 0
-                                            } else {
-                                                try {
-                                                    TtsEngine.speakerId = it.toString().toInt()
-                                                } catch (ex: NumberFormatException) {
-                                                    Log.i(TAG, "Invalid input: $it")
-                                                    TtsEngine.speakerId = 0
-                                                }
-                                            }
-                                            preferenceHelper.setSid(TtsEngine.speakerId)
-                                        },
-                                        label = {
-                                            Text("Speaker ID: (0-${numSpeakers - 1})")
-                                        },
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(bottom = 16.dp)
-                                            .wrapContentHeight(),
-                                    )
-                                }
-
-                                OutlinedTextField(
-                                    value = testText,
-                                    onValueChange = { testText = it },
-                                    label = { Text("Please input your text here") },
-                                    maxLines = 10,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(bottom = 16.dp)
-                                        .verticalScroll(scrollState)
-                                        .wrapContentHeight(),
-                                    singleLine = false,
-                                )
-
-                                Row {
-                                    Button(
-                                        enabled = startEnabled,
-                                        modifier = Modifier.padding(5.dp),
-                                        onClick = {
-                                            Log.i(TAG, "Clicked, text: $testText")
-                                            if (testText.isBlank() || testText.isEmpty()) {
-                                                Toast.makeText(
-                                                    applicationContext,
-                                                    "Please input some text to generate",
-                                                    Toast.LENGTH_SHORT
-                                                ).show()
-                                            } else {
-                                                startEnabled = false
-                                                playEnabled = false
-                                                saveEnabled = false
-                                                shareEnabled = false
-                                                stopped = false
-
-                                                track.pause()
-                                                track.flush()
-                                                track.play()
-                                                rtfText = ""
-                                                Log.i(TAG, "Started with text $testText")
-
-                                                scope.launch {
-                                                    for (samples in samplesChannel) {
-                                                        if (samples.isEmpty()) {
-                                                            break
-                                                        }
-
-                                                        Log.i(
-                                                            TAG,
-                                                            "Received ${samples.count()} samples"
-                                                        )
-                                                        track.write(
-                                                            samples,
-                                                            0,
-                                                            samples.size,
-                                                            AudioTrack.WRITE_BLOCKING
-                                                        )
-                                                        if (stopped) {
-                                                            break
-                                                        }
-                                                    }
-                                                    Log.i(TAG, "Draining the channel")
-
-                                                    // drain remaining
-                                                    while (!samplesChannel.isEmpty) {
-                                                        samplesChannel.tryReceive().getOrNull()
-                                                    }
-                                                    Log.i(TAG, "Channel drained")
-
-                                                }
-
-                                                CoroutineScope(Dispatchers.Default).launch {
-                                                    val timeSource = TimeSource.Monotonic
-                                                    val startTime = timeSource.markNow()
-
-                                                    val genConfig = GenerationConfig(sid = TtsEngine.speakerId, speed = TtsEngine.speed)
-                                                    if (TtsEngine.isSupertonic) {
-                                                        genConfig.extra = mapOf("lang" to TtsEngine.supertonicLang)
-                                                    }
-                                                    var genText = testText
-                                                    if (TtsEngine.usePhonemize) {
-                                                        // Phonemize outside of sherpa-onnx with
-                                                        // piper-phonemize and pass the phoneme
-                                                        // codepoints.
-                                                        genConfig.phonemeCodepoints =
-                                                            TtsEngine.phonemize(testText)
-                                                        // The text has already been phonemized.
-                                                        genText = ""
-                                                    }
-                                                    val audio =
-                                                        TtsEngine.tts!!.generateWithConfigAndCallback(
-                                                            text = genText,
-                                                            config = genConfig,
-                                                            callback = ::callback,
-                                                        )
-
-                                                    val elapsed =
-                                                        startTime.elapsedNow().inWholeMilliseconds.toFloat() / 1000;
-                                                    val audioDuration =
-                                                        audio.samples.size / TtsEngine.tts!!.sampleRate()
-                                                            .toFloat()
-                                                    val RTF = String.format(
-                                                        "Number of threads: %d\nElapsed: %.3f s\nAudio duration: %.3f s\nRTF: %.3f/%.3f = %.3f",
-                                                        TtsEngine.tts!!.config.model.numThreads,
-                                                        elapsed,
-                                                        audioDuration,
-                                                        elapsed,
-                                                        audioDuration,
-                                                        elapsed / audioDuration
-                                                    )
-
-                                                    scope.launch {
-                                                        Log.i(TAG, "send 0 samples")
-                                                            samplesChannel.send(FloatArray(0))
-                                                        Log.i(TAG, "send 0 samples done")
-                                                    }
-
-                                                    val filename =
-                                                        application.filesDir.absolutePath + "/generated.wav"
-
-
-                                                    val ok =
-                                                        audio.samples.isNotEmpty() && audio.save(
-                                                            filename
-                                                        )
-
-                                                    if (ok) {
-                                                        withContext(Dispatchers.Main) {
-                                                            startEnabled = true
-                                                            playEnabled = true
-                                                            saveEnabled = true
-                                                            shareEnabled = true
-                                                            rtfText = RTF
-                                                        }
-
-
-                                                    }
-                                                }
-                                            }
-                                        }) {
-                                        Text("Start")
-                                    }
-
-                                    Button(
-                                        modifier = Modifier.padding(5.dp),
-                                        enabled = playEnabled,
-                                        onClick = {
-                                            stopped = true
-                                            track.pause()
-                                            track.flush()
-                                            onClickPlay()
-                                        }) {
-                                        Text("Play")
-                                    }
-
-                                    Button(
-                                        modifier = Modifier.padding(5.dp),
-                                        onClick = {
-                                            onClickStop()
-                                            startEnabled = true
-                                        }) {
-                                        Text("Stop")
-                                    }
-                                }
-
-                                Row {
-                                    Button(
-                                        enabled = saveEnabled,
-                                        modifier = Modifier.padding(5.dp),
-                                        onClick = {
-                                            saveLauncher.launch("generated.wav")
-                                        }) {
-                                        Text("Save")
-                                    }
-
-                                    Button(
-                                        enabled = shareEnabled,
-                                        modifier = Modifier.padding(5.dp),
-                                        onClick = {
-                                            val file = File(application.filesDir.absolutePath + "/generated.wav")
-                                            if (!file.exists()) {
-                                                Toast.makeText(applicationContext, "No audio to share", Toast.LENGTH_SHORT).show()
-                                            } else {
-                                                val uri = FileProvider.getUriForFile(
-                                                    context,
-                                                    "com.k2fsa.sherpa.onnx.tts.engine.fileprovider",
-                                                    file
-                                                )
-                                                val intent = Intent(Intent.ACTION_SEND).apply {
-                                                    type = "audio/wav"
-                                                    putExtra(Intent.EXTRA_STREAM, uri)
-                                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                                }
-                                                startActivity(Intent.createChooser(intent, "Share audio"))
-                                            }
-                                        }) {
-                                        Text("Share")
-                                    }
-                                }
-                                if (rtfText.isNotEmpty()) {
-                                    Row {
-                                        Text(rtfText)
-                                    }
-                                }
                             }
+
+                            OutlinedTextField(
+                                value = text,
+                                onValueChange = { text = it },
+                                label = { Text("Text de citit") },
+                                modifier = Modifier.fillMaxWidth(),
+                                minLines = 4,
+                                maxLines = 8,
+                                enabled = !isBusy,
+                            )
+
+                            Button(
+                                modifier = Modifier.fillMaxWidth(),
+                                enabled = !isBusy,
+                                onClick = {
+                                    val textToSpeak = text.trim()
+                                    if (textToSpeak.isEmpty()) {
+                                        status = "Introdu textul pe care vrei să-l asculți."
+                                        return@Button
+                                    }
+
+                                    val voiceId = selectedVoiceId
+                                    isBusy = true
+                                    status = "Se încarcă modelul și se generează vocea…"
+                                    scope.launch {
+                                        try {
+                                            val audio = withContext(Dispatchers.IO) {
+                                                TtsEngine.selectVoice(context, voiceId)
+                                                val synthesizer = TtsEngine.tts
+                                                    ?: error("Motorul TTS nu a creat sintetizatorul.")
+                                                val config = GenerationConfig(
+                                                    sid = TtsEngine.speakerId,
+                                                    speed = TtsEngine.speed,
+                                                )
+                                                config.phonemeCodepoints =
+                                                    TtsEngine.phonemize(textToSpeak)
+                                                synthesizer.generateWithConfig(
+                                                    text = "",
+                                                    config = config,
+                                                )
+                                            }
+                                            status = "Se redă vocea…"
+                                            playAudio(audio)
+                                            status = "Redare terminată."
+                                        } catch (e: CancellationException) {
+                                            throw e
+                                        } catch (e: Exception) {
+                                            Log.e(TAG, "Failed to generate voice preview", e)
+                                            status = e.localizedMessage
+                                                ?.takeIf { it.isNotBlank() }
+                                                ?.let { "Eroare la redarea vocii: $it" }
+                                                ?: "Nu s-a putut genera vocea. Verifică modelul și bibliotecile native."
+                                        } finally {
+                                            isBusy = false
+                                        }
+                                    }
+                                },
+                            ) {
+                                if (isBusy) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.height(20.dp),
+                                        color = MaterialTheme.colorScheme.onPrimary,
+                                        strokeWidth = 2.dp,
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                }
+                                Text(if (isBusy) "Se procesează…" else "Testează vocea")
+                            }
+
+                            Button(
+                                modifier = Modifier.fillMaxWidth(),
+                                enabled = !isBusy,
+                                onClick = {
+                                    try {
+                                        context.startActivity(
+                                            Intent("com.android.settings.TTS_SETTINGS")
+                                        )
+                                    } catch (e: ActivityNotFoundException) {
+                                        Log.e(TAG, "Android TTS settings activity is unavailable", e)
+                                        status = "Setările TTS Android nu sunt disponibile pe acest dispozitiv."
+                                    }
+                                },
+                            ) {
+                                Text("Setări TTS Android")
+                            }
+
+                            Text(
+                                text = status,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.secondary,
+                            )
                         }
                     }
                 }
             }
         }
     }
+}
 
-    override fun onDestroy() {
-        stopMediaPlayer()
-        super.onDestroy()
+private suspend fun playAudio(audio: GeneratedAudio) = withContext(Dispatchers.IO) {
+    check(audio.samples.isNotEmpty()) { "Modelul nu a generat audio." }
+    val samples = ShortArray(audio.samples.size) { index ->
+        (audio.samples[index].coerceIn(-1.0f, 1.0f) * Short.MAX_VALUE).toInt().toShort()
     }
+    val channelMask = AudioFormat.CHANNEL_OUT_MONO
+    val encoding = AudioFormat.ENCODING_PCM_16BIT
+    val minBufferSize = AudioTrack.getMinBufferSize(audio.sampleRate, channelMask, encoding)
+    check(minBufferSize > 0) { "Nu s-a putut configura ieșirea audio." }
 
-    private fun stopMediaPlayer() {
-        mediaPlayer?.stop()
-        mediaPlayer?.release()
-        mediaPlayer = null
-    }
+    val attributes = AudioAttributes.Builder()
+        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+        .setUsage(AudioAttributes.USAGE_MEDIA)
+        .build()
+    val format = AudioFormat.Builder()
+        .setEncoding(encoding)
+        .setChannelMask(channelMask)
+        .setSampleRate(audio.sampleRate)
+        .build()
+    val track = AudioTrack(
+        attributes,
+        format,
+        maxOf(minBufferSize, 4096),
+        AudioTrack.MODE_STREAM,
+        AudioManager.AUDIO_SESSION_ID_GENERATE,
+    )
 
-    private fun onClickPlay() {
-        val filename = application.filesDir.absolutePath + "/generated.wav"
-        stopMediaPlayer()
-        mediaPlayer = MediaPlayer.create(
-            applicationContext,
-            Uri.fromFile(File(filename))
-        )
-        mediaPlayer?.start()
-    }
-
-    private fun onClickStop() {
-        stopped = true
-        track.pause()
-        track.flush()
-
-        stopMediaPlayer()
-    }
-
-    // this function is called from C++
-    private fun callback(samples: FloatArray): Int {
-        if (!stopped) {
-            val samplesCopy = samples.copyOf()
-            scope.launch {
-                Log.i(TAG, "callback called with ${samplesCopy.count()} samples")
-                val ok = samplesChannel.trySend(samplesCopy).isSuccess
-                Log.i(TAG, "callback called with $ok")
-            }
-            return 1
-        } else {
-            track.stop()
-            Log.i(TAG, " return 0")
-            return 0
-        }
-    }
-
-    private fun initAudioTrack() {
-        val sampleRate = TtsEngine.tts!!.sampleRate()
-        val bufLength = AudioTrack.getMinBufferSize(
-            sampleRate,
-            AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_FLOAT
-        )
-        Log.i(TAG, "sampleRate: $sampleRate, buffLength: $bufLength")
-
-        val attr = AudioAttributes.Builder().setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .setUsage(AudioAttributes.USAGE_MEDIA)
-            .build()
-
-        val format = AudioFormat.Builder()
-            .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-            .setSampleRate(sampleRate)
-            .build()
-
-        track = AudioTrack(
-            attr, format, bufLength, AudioTrack.MODE_STREAM,
-            AudioManager.AUDIO_SESSION_ID_GENERATE
-        )
+    try {
+        check(track.state == AudioTrack.STATE_INITIALIZED) { "Nu s-a putut inițializa redarea audio." }
         track.play()
+        var offset = 0
+        while (offset < samples.size) {
+            val written = track.write(samples, offset, minOf(2048, samples.size - offset))
+            check(written > 0) { "Redarea audio a eșuat (cod $written)." }
+            offset += written
+        }
+        while (track.playbackHeadPosition < samples.size) {
+            delay(20)
+        }
+    } finally {
+        if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+            track.stop()
+        }
+        track.release()
     }
 }

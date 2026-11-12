@@ -6,6 +6,7 @@ class PreferenceHelper(context: Context) {
     private val PREFS_NAME = "com.k2fsa.sherpa.onnx.tts.engine"
     private val SPEED_KEY = "speed"
     private val SID_KEY = "speaker_id"
+    private val VOICE_KEY = "romanian_voice"
 
     private val sharedPreferences: SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -28,5 +29,13 @@ class PreferenceHelper(context: Context) {
 
     fun getSid(): Int {
         return sharedPreferences.getInt(SID_KEY, 0)
+    }
+
+    fun setVoice(value: String) {
+        sharedPreferences.edit().putString(VOICE_KEY, value).apply()
+    }
+
+    fun getVoice(): String {
+        return sharedPreferences.getString(VOICE_KEY, null) ?: "liliana"
     }
 }

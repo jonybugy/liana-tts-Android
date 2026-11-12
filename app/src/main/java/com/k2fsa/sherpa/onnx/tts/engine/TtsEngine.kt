@@ -13,13 +13,35 @@ import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.getOfflineTtsConfig
 import org.json.JSONObject
 
+enum class RomanianVoice(
+    val id: String,
+    val displayName: String,
+    val modelFile: String,
+    val configFile: String,
+) {
+    LILIANA(
+        id = "liliana",
+        displayName = "Liliana (model Liana)",
+        modelFile = "ro_RO-liana-medium.onnx",
+        configFile = "ro_RO-liana-medium.onnx.json",
+    ),
+    MIHAI(
+        id = "mihai",
+        displayName = "Mihai",
+        modelFile = "ro_RO-mihai-medium.onnx",
+        configFile = "ro_RO-mihai-medium.onnx.json",
+    );
+
+    companion object {
+        fun fromId(id: String): RomanianVoice =
+            values().firstOrNull { it.id == id } ?: LILIANA
+    }
+}
+
 const val MIN_TTS_SPEED = 0.1f
 const val MAX_TTS_SPEED = 5.0f
 
 object TtsEngine {
-    private const val MODEL_NAME = "ro_RO-liana-medium.onnx"
-    private const val MODEL_CONFIG_NAME = "ro_RO-liana-medium.onnx.json"
-
     var tts: OfflineTts? = null
 
     // https://en.wikipedia.org/wiki/ISO_639-3
@@ -54,6 +76,8 @@ object TtsEngine {
     private var modelDir: String? = null
     private var modelName: String? = null
     private var phonemizerVoice = "ro"
+    private var loadedVoiceId: String? = null
+    private var phonemizerInitialized = false
     private var acousticModelName: String? = null // for matcha tts
     private var vocoder: String? = null // for matcha tts
     private var voices: String? = null // for kokoro
@@ -100,7 +124,7 @@ object TtsEngine {
         // Please enable one and only one of the examples below
 
         modelDir = ""
-        modelName = MODEL_NAME
+        modelName = RomanianVoice.LILIANA.modelFile
         lang = "ron"
         usePhonemize = true
 
@@ -231,19 +255,39 @@ object TtsEngine {
         // supertonicLang = "en"  // ISO 639-1: en, zh, ja, ko, fr, de, es, etc.
     }
 
+    @Synchronized
     fun createTts(context: Context) {
-        Log.i(TAG, "Init Next-gen Kaldi TTS")
-        if (tts == null) {
-            initTts(context)
+        val selectedVoice = RomanianVoice.fromId(PreferenceHelper(context).getVoice())
+        if (tts != null && loadedVoiceId == selectedVoice.id) {
+            return
         }
+
+        Log.i(TAG, "Initializing Romanian TTS voice: ${selectedVoice.displayName}")
+        tts?.release()
+        tts = null
+        loadedVoiceId = null
+        initTts(context, selectedVoice)
+        loadedVoiceId = selectedVoice.id
     }
 
-    private fun initTts(context: Context) {
+    @Synchronized
+    fun selectVoice(context: Context, voiceId: String) {
+        val selectedVoice = RomanianVoice.fromId(voiceId)
+        PreferenceHelper(context).setVoice(selectedVoice.id)
+        createTts(context)
+    }
+
+    @Synchronized
+    private fun initTts(context: Context, voice: RomanianVoice) {
         assets = context.assets
+        modelName = voice.modelFile
 
         if (usePhonemize) {
-            piperPhonemizeInitialize(context)
-            phonemizerVoice = assets!!.open(MODEL_CONFIG_NAME).bufferedReader().use {
+            if (!phonemizerInitialized) {
+                piperPhonemizeInitialize(context)
+                phonemizerInitialized = true
+            }
+            phonemizerVoice = assets!!.open(voice.configFile).bufferedReader().use {
                 JSONObject(it.readText()).getJSONObject("espeak").getString("voice")
             }
         }
@@ -265,7 +309,7 @@ object TtsEngine {
             voiceStyle = voiceStyle ?: "",
         )
         // The model is stored at the root of assets rather than in a subdirectory.
-        config.model.vits.model = MODEL_NAME
+        config.model.vits.model = voice.modelFile
         config.model.vits.tokens = ""
 
         speed = PreferenceHelper(context).getSpeed()
